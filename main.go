@@ -28,9 +28,14 @@ func handler(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (cfg *apiConfig) reportingHandler(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(200)
-	hitCount := fmt.Sprintf("Hits: %d", cfg.fileserverHits.Load())
+	hitCount := fmt.Sprintf(`<html>
+  <body>
+    <h1>Welcome, Chirpy Admin</h1>
+    <p>Chirpy has been visited %d times!</p>
+  </body>
+</html>`, cfg.fileserverHits.Load())
 	_, err := w.Write([]byte(hitCount))
 	if err != nil {
 		log.Printf("error while writing response: %v", err)
@@ -52,10 +57,10 @@ func main() {
 	apiCfg := &apiConfig{}
 	mux := http.NewServeMux()
 	mux.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app/", http.FileServer(http.Dir(".")))))
-	mux.Handle("GET /api/metrics", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mux.Handle("GET /admin/metrics", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		apiCfg.reportingHandler(w, r)
 	}))
-	mux.Handle("POST /api/reset", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mux.Handle("POST /admin/reset", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		apiCfg.resetHandler(w, r)
 	}))
 
