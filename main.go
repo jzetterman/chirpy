@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -42,6 +43,54 @@ func (cfg *apiConfig) reportingHandler(w http.ResponseWriter, _ *http.Request) {
 	}
 }
 
+func chirpHandler(w http.ResponseWriter, r *http.Request) {
+	type parameters struct {
+		Body string `json:"body"`
+	}
+
+	type returnVals struct {
+		Error string `json:"error"`
+		Valid bool   `json:"valid"`
+	}
+
+	decoder := json.NewDecoder(r.Body)
+	params := parameters{}
+	err := decoder.Decode(&params)
+	if err != nil {
+		log.Printf("Error decoding parameters: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+
+	respCode := 200
+	respBody := returnVals{
+		Error: "",
+		Valid: true,
+	}
+
+	if len(params.Body) > 140 {
+		respBody = returnVals{
+			Error: "Chirp is too long",
+			Valid: false,
+		}
+		respCode = 400
+	}
+
+	data, err := json.Marshal(respBody)
+	if err != nil {
+		log.Printf("Error marshalling JSON: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(respCode)
+	_, err = w.Write(data)
+	if err != nil {
+		log.Printf("Error writing response: %s", err)
+	}
+
+}
+
 func (cfg *apiConfig) resetHandler(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(200)
@@ -64,6 +113,7 @@ func main() {
 		apiCfg.resetHandler(w, r)
 	}))
 
+	mux.HandleFunc("POST /api/validate_chirp", chirpHandler)
 	mux.HandleFunc("GET /api/healthz", handler)
 
 	server := http.Server{Handler: mux, Addr: ":8080"}
