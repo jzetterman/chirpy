@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"sync/atomic"
 )
 
@@ -43,54 +44,6 @@ func (cfg *apiConfig) reportingHandler(w http.ResponseWriter, _ *http.Request) {
 	}
 }
 
-func chirpHandler(w http.ResponseWriter, r *http.Request) {
-	type parameters struct {
-		Body string `json:"body"`
-	}
-
-	type returnVals struct {
-		Error string `json:"error"`
-		Valid bool   `json:"valid"`
-	}
-
-	decoder := json.NewDecoder(r.Body)
-	params := parameters{}
-	err := decoder.Decode(&params)
-	if err != nil {
-		log.Printf("Error decoding parameters: %s", err)
-		w.WriteHeader(500)
-		return
-	}
-
-	respCode := 200
-	respBody := returnVals{
-		Error: "",
-		Valid: true,
-	}
-
-	if len(params.Body) > 140 {
-		respBody = returnVals{
-			Error: "Chirp is too long",
-			Valid: false,
-		}
-		respCode = 400
-	}
-
-	data, err := json.Marshal(respBody)
-	if err != nil {
-		log.Printf("Error marshalling JSON: %s", err)
-		w.WriteHeader(500)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(respCode)
-	_, err = w.Write(data)
-	if err != nil {
-		log.Printf("Error writing response: %s", err)
-	}
-
-}
-
 func (cfg *apiConfig) resetHandler(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(200)
@@ -99,6 +52,96 @@ func (cfg *apiConfig) resetHandler(w http.ResponseWriter, _ *http.Request) {
 	_, err := w.Write([]byte(hitCount))
 	if err != nil {
 		log.Printf("error while writing response: %v", err)
+	}
+}
+
+func chirpHandler(w http.ResponseWriter, r *http.Request) {
+	type parameters struct {
+		Body string `json:"body"`
+	}
+
+	type response struct {
+		Cleaned_Body string `json:"cleaned_body"`
+	}
+
+	decoder := json.NewDecoder(r.Body)
+	params := parameters{}
+	resp := response{}
+
+	err := decoder.Decode(&params)
+	if err != nil {
+		log.Printf("Error decoding parameters: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+
+	resp.Cleaned_Body = badWordReplacer(params.Body)
+
+	if len(params.Body) > 140 {
+		respondWithError(w, 400, "Chirp is too long")
+	} else {
+		respondWithJSON(w, 200, resp)
+	}
+}
+
+func badWordReplacer(msg string) string {
+	replacements := map[string]string{
+		"kerfuffle": "****",
+		"sharbert":  "****",
+		"fornax":    "****",
+	}
+
+	cleanedWords := []string{}
+	individualWords := strings.Split(msg, " ")
+	for _, word := range individualWords {
+		if value, exists := replacements[strings.ToLower(word)]; exists {
+			cleanedWords = append(cleanedWords, value)
+		} else {
+			cleanedWords = append(cleanedWords, word)
+		}
+	}
+
+	return strings.Join(cleanedWords, " ")
+}
+
+func respondWithError(w http.ResponseWriter, code int, msg string) {
+	type returnVals struct {
+		Error string `json:"error"`
+	}
+
+	errorJSON := returnVals{
+		Error: msg,
+	}
+
+	data, err := json.Marshal(errorJSON)
+	if err != nil {
+		log.Printf("Error marshalling JSON: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_, err = w.Write(data)
+	if err != nil {
+		log.Printf("Error writing response: %s", err)
+		return
+	}
+}
+
+func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		log.Printf("Error marshalling JSON: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_, err = w.Write(data)
+	if err != nil {
+		log.Printf("Error writing response: %s", err)
+		return
 	}
 }
 
