@@ -21,6 +21,7 @@ import (
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
+	platform       string
 	database       *database.Queries
 }
 
@@ -29,6 +30,14 @@ type User struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 	Email     string    `json:"email"`
+}
+
+type Chirp struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Body      string    `json:"body"`
+	UserID    uuid.UUID `json:"user_id"`
 }
 
 // Main handler for front page
@@ -96,21 +105,49 @@ func (cfg *apiConfig) reportingHandler(w http.ResponseWriter, _ *http.Request) {
 }
 
 // Reset handler resets hit counter
-func (cfg *apiConfig) resetHandler(w http.ResponseWriter, _ *http.Request) {
+func (cfg *apiConfig) resetHandler(w http.ResponseWriter, r *http.Request) {
+	if cfg.platform != "dev" {
+		respondWithError(w, 403, "Forbidden")
+		return
+	}
+
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(200)
 	cfg.fileserverHits.Swap(0)
+	err := cfg.database.DeleteAllUsers(r.Context())
 	hitCount := fmt.Sprintf("Hits: %d", cfg.fileserverHits.Load())
-	_, err := w.Write([]byte(hitCount))
+	_, err = w.Write([]byte(hitCount))
 	if err != nil {
 		log.Printf("error while writing response: %v", err)
 	}
 }
 
-// Chirp handler accepts 140 character string to be posted
-func chirpHandler(w http.ResponseWriter, r *http.Request) {
+// chirpsGetHandler() retrieves chirps using a GET request
+func (cfg *apiConfig) chirpsGetHandler(w http.ResponseWriter, r *http.Request) {
+	chirps, err := cfg.database.GetChirps(r.Context())
+	if err != nil {
+		log.Printf("Error retrieving data from database: %s", err)
+	}
+
+	respChirps := []Chirp{}
+	for _, chirp := range chirps {
+		temp := Chirp{}
+		temp.ID = chirp.ID
+		temp.CreatedAt = chirp.CreatedAt
+		temp.UpdatedAt = chirp.UpdatedAt
+		temp.Body = chirp.Body
+		temp.UserID = chirp.UserID
+		respChirps = append(respChirps, temp)
+	}
+
+	respondWithJSON(w, 200, respChirps)
+}
+
+// chirpsPostHandler() accepts 140 character string to be posted
+func (cfg *apiConfig) chirpsPostHandler(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
-		Body string `json:"body"`
+		Body    string    `json:"body"`
+		User_ID uuid.UUID `json:"user_id"`
 	}
 
 	type response struct {
@@ -129,11 +166,29 @@ func chirpHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp.Cleaned_Body = badWordReplacer(params.Body)
+	dbParams := database.CreateChirpParams{
+		Body:   resp.Cleaned_Body,
+		UserID: params.User_ID,
+	}
 
 	if len(params.Body) > 140 {
 		respondWithError(w, 400, "Chirp is too long")
 	} else {
-		respondWithJSON(w, 200, resp)
+		chirp, err := cfg.database.CreateChirp(r.Context(), dbParams)
+		if err != nil {
+			log.Printf("Error creating chirp: %s", err)
+			w.WriteHeader(500)
+			return
+		}
+
+		respChirp := Chirp{}
+		respChirp.ID = chirp.ID
+		respChirp.CreatedAt = chirp.CreatedAt
+		respChirp.UpdatedAt = chirp.UpdatedAt
+		respChirp.Body = chirp.Body
+		respChirp.UserID = chirp.UserID
+
+		respondWithJSON(w, 201, respChirp)
 	}
 }
 
@@ -202,25 +257,35 @@ func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
 }
 
 func main() {
+	// Set all prerequisities:
 	err := godotenv.Load()
 	if err != nil {
 		log.Printf("Error loading environment variables: %s", err)
 	}
 
 	dbURL := os.Getenv("DB_URL")
+	platform := os.Getenv("PLATFORM")
+
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
 		log.Printf("Error connecting to database: %s", err)
 	}
 	dbQueries := database.New(db)
 
-	apiCfg := &apiConfig{}
+	apiCfg := &apiConfig{
+		database: dbQueries,
+		platform: platform,
+	}
 	apiCfg.database = dbQueries
 
+	// ------------------ Route Handlers ------------------
 	mux := http.NewServeMux()
 	mux.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app/", http.FileServer(http.Dir(".")))))
 	mux.Handle("GET /admin/metrics", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		apiCfg.reportingHandler(w, r)
+	}))
+	mux.Handle("GET /api/chirps", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		apiCfg.chirpsGetHandler(w, r)
 	}))
 	mux.Handle("POST /admin/reset", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		apiCfg.resetHandler(w, r)
@@ -228,8 +293,10 @@ func main() {
 	mux.Handle("POST /api/users", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		apiCfg.createNewUser(w, r)
 	}))
+	mux.Handle("POST /api/chirps", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		apiCfg.chirpsPostHandler(w, r)
+	}))
 
-	mux.HandleFunc("POST /api/validate_chirp", chirpHandler)
 	mux.HandleFunc("GET /api/healthz", handler)
 
 	server := http.Server{Handler: mux, Addr: ":8080"}
