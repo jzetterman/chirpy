@@ -115,6 +115,9 @@ func (cfg *apiConfig) resetHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(200)
 	cfg.fileserverHits.Swap(0)
 	err := cfg.database.DeleteAllUsers(r.Context())
+	if err != nil {
+		log.Printf("There was an error deleting users: %s", err)
+	}
 	hitCount := fmt.Sprintf("Hits: %d", cfg.fileserverHits.Load())
 	_, err = w.Write([]byte(hitCount))
 	if err != nil {
@@ -124,6 +127,34 @@ func (cfg *apiConfig) resetHandler(w http.ResponseWriter, r *http.Request) {
 
 // chirpsGetHandler() retrieves chirps using a GET request
 func (cfg *apiConfig) chirpsGetHandler(w http.ResponseWriter, r *http.Request) {
+	if r.PathValue("chirpID") != "" {
+		chirpUUID, err := uuid.Parse(r.PathValue("chirpID"))
+		if err != nil {
+			log.Printf("Error parsing UUID: %s", r.PathValue("chirpID"))
+			respondWithError(w, 400, fmt.Sprintf("Error parsing UUID: %s", r.PathValue("chirpID")))
+			return
+		}
+
+		chirp, err := cfg.database.GetOnehirp(r.Context(), chirpUUID)
+		if err == sql.ErrNoRows {
+			respondWithError(w, 404, fmt.Sprintf("No results found for UUID: %s", chirpUUID))
+			return
+		} else if err != nil {
+			log.Printf("Error retrieving data from database: %s", err)
+			respondWithError(w, 500, fmt.Sprintf("Error retrieving data from database: %s", err))
+			return
+		}
+
+		respChirp := Chirp{}
+		respChirp.ID = chirp.ID
+		respChirp.CreatedAt = chirp.CreatedAt
+		respChirp.UpdatedAt = chirp.UpdatedAt
+		respChirp.Body = chirp.Body
+		respChirp.UserID = chirp.UserID
+		respondWithJSON(w, 200, respChirp)
+		return
+	}
+
 	chirps, err := cfg.database.GetChirps(r.Context())
 	if err != nil {
 		log.Printf("Error retrieving data from database: %s", err)
@@ -285,6 +316,9 @@ func main() {
 		apiCfg.reportingHandler(w, r)
 	}))
 	mux.Handle("GET /api/chirps", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		apiCfg.chirpsGetHandler(w, r)
+	}))
+	mux.Handle("GET /api/chirps/{chirpID}", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		apiCfg.chirpsGetHandler(w, r)
 	}))
 	mux.Handle("POST /admin/reset", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
