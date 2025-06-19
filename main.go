@@ -1,10 +1,10 @@
 package main
 
-import "github.com/google/uuid"
 import (
-	// "context"
+	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -13,23 +13,29 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/joho/godotenv"
+	"github.com/jzetterman/chirpy/internal/auth"
 	"github.com/jzetterman/chirpy/internal/database"
+
 	_ "github.com/lib/pq"
-	// "github.com/tetratelabs/wazero/api"
 )
+
+// "github.com/tetratelabs/wazero/api"
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
 	platform       string
 	database       *database.Queries
+	secret         string
 }
 
 type User struct {
-	ID        uuid.UUID `json:"id"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	Email     string    `json:"email"`
+	ID               uuid.UUID `json:"id"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
+	Email            string    `json:"email"`
+	ExpiresInSeconds int       `json:"expires_in_seconds"`
 }
 
 type Chirp struct {
@@ -61,7 +67,8 @@ func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 // Handler for adding new users
 func (cfg *apiConfig) createNewUser(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
-		Email string `json:"email"`
+		Email    string `json:"email"`
+		Password string `json:"password"`
 	}
 
 	decoder := json.NewDecoder(r.Body)
@@ -74,18 +81,111 @@ func (cfg *apiConfig) createNewUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := cfg.database.CreateUser(r.Context(), params.Email)
+	hashedPassword, err := auth.HashPassword(params.Password)
+	if err != nil {
+		log.Printf("Error hasing password: %s", err)
+	}
+
+	userArgs := database.CreateUserParams{
+		Email:          params.Email,
+		HashedPassword: hashedPassword,
+	}
+
+	user, err := cfg.database.CreateUser(r.Context(), userArgs)
 	if err != nil {
 		log.Printf("Error creating user: %s", err)
 	}
 
 	respUser := User{}
-	respUser.Email = user.Email
+	respUser.ID = user.ID
 	respUser.CreatedAt = user.CreatedAt
 	respUser.UpdatedAt = user.UpdatedAt
-	respUser.ID = user.ID
+	respUser.Email = user.Email
 
 	respondWithJSON(w, 201, respUser)
+}
+
+func (cfg *apiConfig) loginHandler(w http.ResponseWriter, r *http.Request) {
+	type parameters struct {
+		Email            string `json:"email"`
+		Password         string `json:"password"`
+		ExpiresInSeconds *int   `json:"expires_in_seconds"`
+	}
+
+	type finalUser struct {
+		ID        uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Email     string    `json:"email"`
+		Token     string    `json:"token"`
+	}
+
+	tokenExpirationInSeconds := 0
+
+	decoder := json.NewDecoder(r.Body)
+	params := parameters{}
+
+	err := decoder.Decode(&params)
+	if err != nil {
+		log.Printf("Error decoding parameters: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+
+	authenticated, err := cfg.authenticateUser(r.Context(), params.Email, params.Password)
+	if err != nil {
+		log.Printf("User was not successfully authenticated: %s", err)
+		respondWithError(w, 401, "Authentication failed")
+		return
+	}
+
+	if params.ExpiresInSeconds == nil {
+		tokenExpirationInSeconds = 3600
+	} else {
+		if *params.ExpiresInSeconds > 3600 {
+			tokenExpirationInSeconds = 3600
+		} else {
+			tokenExpirationInSeconds = *params.ExpiresInSeconds
+		}
+	}
+
+	jwt, err := auth.MakeJWT(authenticated.ID, cfg.secret, time.Duration(tokenExpirationInSeconds)*time.Second)
+	if err != nil {
+		log.Printf("Error creating JWT token: %s", err)
+		respondWithError(w, 500, fmt.Sprintf("Error creating JWT token: %s", err))
+		return
+	}
+
+	userResp := finalUser{
+		ID:        authenticated.ID,
+		CreatedAt: authenticated.CreatedAt,
+		UpdatedAt: authenticated.UpdatedAt,
+		Email:     authenticated.Email,
+		Token:     jwt,
+	}
+	respondWithJSON(w, 200, userResp)
+
+}
+
+// Authenticate user method
+func (cfg *apiConfig) authenticateUser(ctx context.Context, email, password string) (User, error) {
+	user, err := cfg.database.GetUserByEmail(ctx, email)
+	if err != nil {
+		log.Printf("Error retrieving user: %s", err)
+		return User{}, errors.New("user not found")
+	}
+
+	authCheck := auth.CheckPasswordHash(user.HashedPassword, password)
+	if authCheck != nil {
+		return User{}, errors.New("incorrect email or password")
+	}
+
+	respUser := User{}
+	respUser.ID = user.ID
+	respUser.CreatedAt = user.CreatedAt
+	respUser.UpdatedAt = user.UpdatedAt
+	respUser.Email = user.Email
+	return respUser, nil
 }
 
 // Reporting handler
@@ -177,12 +277,11 @@ func (cfg *apiConfig) chirpsGetHandler(w http.ResponseWriter, r *http.Request) {
 // chirpsPostHandler() accepts 140 character string to be posted
 func (cfg *apiConfig) chirpsPostHandler(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
-		Body    string    `json:"body"`
-		User_ID uuid.UUID `json:"user_id"`
+		Body string `json:"body"`
 	}
 
 	type response struct {
-		Cleaned_Body string `json:"cleaned_body"`
+		CleanedBody string `json:"cleaned_body"`
 	}
 
 	decoder := json.NewDecoder(r.Body)
@@ -196,31 +295,45 @@ func (cfg *apiConfig) chirpsPostHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	resp.Cleaned_Body = badWordReplacer(params.Body)
-	dbParams := database.CreateChirpParams{
-		Body:   resp.Cleaned_Body,
-		UserID: params.User_ID,
-	}
-
 	if len(params.Body) > 140 {
+		log.Printf("Chirp is more than 140 chars")
 		respondWithError(w, 400, "Chirp is too long")
-	} else {
-		chirp, err := cfg.database.CreateChirp(r.Context(), dbParams)
-		if err != nil {
-			log.Printf("Error creating chirp: %s", err)
-			w.WriteHeader(500)
-			return
-		}
-
-		respChirp := Chirp{}
-		respChirp.ID = chirp.ID
-		respChirp.CreatedAt = chirp.CreatedAt
-		respChirp.UpdatedAt = chirp.UpdatedAt
-		respChirp.Body = chirp.Body
-		respChirp.UserID = chirp.UserID
-
-		respondWithJSON(w, 201, respChirp)
+		return
 	}
+
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		log.Printf("Error retrieving the token: %s", err)
+		respondWithError(w, 401, "Unauthorized")
+		return
+	}
+	userID, err := auth.ValidateJWT(token, cfg.secret)
+	if err != nil {
+		log.Printf("Error validating the JWT token: %s", err)
+		respondWithError(w, 401, "Unauthorized")
+		return
+	}
+
+	resp.CleanedBody = badWordReplacer(params.Body)
+	dbParams := database.CreateChirpParams{
+		Body:   resp.CleanedBody,
+		UserID: userID,
+	}
+
+	chirp, err := cfg.database.CreateChirp(r.Context(), dbParams)
+	if err != nil {
+		log.Printf("Error creating chirp: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+
+	respChirp := Chirp{}
+	respChirp.ID = chirp.ID
+	respChirp.CreatedAt = chirp.CreatedAt
+	respChirp.UpdatedAt = chirp.UpdatedAt
+	respChirp.Body = chirp.Body
+	respChirp.UserID = chirp.UserID
+	respondWithJSON(w, 201, respChirp)
 }
 
 // Bad word replacer looks for bad words and replaces them
@@ -296,6 +409,7 @@ func main() {
 
 	dbURL := os.Getenv("DB_URL")
 	platform := os.Getenv("PLATFORM")
+	secret := os.Getenv("SECRET")
 
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
@@ -306,6 +420,7 @@ func main() {
 	apiCfg := &apiConfig{
 		database: dbQueries,
 		platform: platform,
+		secret:   secret,
 	}
 	apiCfg.database = dbQueries
 
@@ -327,6 +442,10 @@ func main() {
 	mux.Handle("POST /api/users", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		apiCfg.createNewUser(w, r)
 	}))
+	mux.Handle("POST /api/login", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		apiCfg.loginHandler(w, r)
+	}))
+
 	mux.Handle("POST /api/chirps", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		apiCfg.chirpsPostHandler(w, r)
 	}))
