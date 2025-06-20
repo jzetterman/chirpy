@@ -11,14 +11,14 @@ import (
 	"github.com/google/uuid"
 )
 
-const getOnehirp = `-- name: GetOnehirp :one
+const getOneChirp = `-- name: GetOneChirp :one
 SELECT id, created_at, updated_at, body, user_id 
 FROM chirps
 WHERE id = $1
 `
 
-func (q *Queries) GetOnehirp(ctx context.Context, id uuid.UUID) (Chirp, error) {
-	row := q.db.QueryRowContext(ctx, getOnehirp, id)
+func (q *Queries) GetOneChirp(ctx context.Context, id uuid.UUID) (Chirp, error) {
+	row := q.db.QueryRowContext(ctx, getOneChirp, id)
 	var i Chirp
 	err := row.Scan(
 		&i.ID,
