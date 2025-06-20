@@ -47,7 +47,6 @@ func main() {
 	}
 	apiCfg.database = dbQueries
 
-	// ------------------ Route Handlers ------------------
 	mux := http.NewServeMux()
 	fsHandler := apiCfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(filepathRoot))))
 	mux.Handle("/app/", fsHandler)
@@ -62,6 +61,7 @@ func main() {
 	mux.HandleFunc("POST /api/refresh", apiCfg.refreshUserToken)
 	mux.HandleFunc("POST /api/revoke", apiCfg.revokeUserToken)
 	mux.HandleFunc("POST /api/chirps", apiCfg.chirpsPostHandler)
+	mux.HandleFunc("PUT /api/users", apiCfg.userUpdateHandler)
 
 	srv := &http.Server{
 		Addr:    ":" + port,
