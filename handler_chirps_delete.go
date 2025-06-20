@@ -6,7 +6,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jzetterman/chirpy/internal/auth"
-	"github.com/jzetterman/chirpy/internal/database"
 )
 
 func (cfg *apiConfig) deleteChirpHandler(w http.ResponseWriter, r *http.Request) {
@@ -19,7 +18,7 @@ func (cfg *apiConfig) deleteChirpHandler(w http.ResponseWriter, r *http.Request)
 
 	token, err := auth.GetBearerToken(r.Header)
 	if err != nil {
-		respondWithError(w, http.StatusUnauthorized, "Error validating token", err)
+		respondWithError(w, http.StatusUnauthorized, "Couldn't find token", err)
 		return
 	}
 
@@ -29,37 +28,26 @@ func (cfg *apiConfig) deleteChirpHandler(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// decoder := json.NewDecoder(r.Body)
-	// params := parameters{}
-	// err = decoder.Decode(&params)
-	// if err != nil {
-	// 	respondWithError(w, http.StatusInternalServerError, "Couldn't decode the provided parameters", err)
-	// 	return
-	// }
-
 	chirp, err := cfg.database.GetOneChirp(r.Context(), chirpID)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			respondWithError(w, http.StatusNotFound, "No chirp found with provided ID", err)
+			respondWithError(w, http.StatusNotFound, "Couldn't get chirp", err)
 			return
 		}
-		respondWithError(w, http.StatusInternalServerError, "Query completed unsuccessfully", err)
+		respondWithError(w, http.StatusInternalServerError, "Server didn't handle request", err)
 		return
 	}
 
 	if chirp.UserID != authedUserID {
-		respondWithError(w, http.StatusForbidden, "User didn't create Chirp", err)
+		respondWithError(w, http.StatusForbidden, "You can't delete this chirp", err)
 		return
 	}
 
-	_, err = cfg.database.DeleteChirp(r.Context(), database.DeleteChirpParams{
-		UserID: authedUserID,
-		ID:     chirpID,
-	})
+	err = cfg.database.DeleteChirp(r.Context(), chirpID)
 	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Delete operation failed", err)
+		respondWithError(w, http.StatusInternalServerError, "Couldn't delete chirp", err)
 		return
 	}
 
-	respondWithJSON(w, http.StatusNoContent, Chirp{})
+	w.WriteHeader(http.StatusNoContent)
 }
