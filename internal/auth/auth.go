@@ -112,3 +112,27 @@ func MakeRefreshToken() (string, error) {
 
 	return encodedToken, nil
 }
+
+func GetAPIKey(headers http.Header) (string, error) {
+	authHeader := headers.Get("Authorization")
+
+	if authHeader == "" {
+		log.Printf("authorization header is missing")
+		return "", errors.New("authorization header is missing")
+	}
+
+	ok := strings.HasPrefix(authHeader, "ApiKey ")
+	if !ok {
+		log.Printf("authorization header missing or malformed")
+		return "", errors.New("authorization header missing or malformed")
+	}
+
+	token := strings.SplitN(authHeader, " ", 2)
+
+	if len(token) != 2 || strings.TrimSpace(token[1]) == "" {
+		log.Printf("token was missing from authorization header")
+		return "", errors.New("token was missing from authorization header")
+	}
+
+	return token[1], nil
+}

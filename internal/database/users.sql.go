@@ -20,7 +20,7 @@ VALUES (
 	$1,
 	$2
 )
-RETURNING id, created_at, updated_at, email, hashed_password
+RETURNING id, created_at, updated_at, email, hashed_password, is_chirpy_red
 `
 
 type CreateUserParams struct {
@@ -37,6 +37,7 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 		&i.UpdatedAt,
 		&i.Email,
 		&i.HashedPassword,
+		&i.IsChirpyRed,
 	)
 	return i, err
 }
@@ -48,7 +49,7 @@ SET
 	hashed_password = COALESCE($3, hashed_password),
 	updated_at = NOW()
 WHERE id = $1
-RETURNING id, created_at, updated_at, email, hashed_password
+RETURNING id, created_at, updated_at, email, hashed_password, is_chirpy_red
 `
 
 type UpdateUserParams struct {
@@ -66,6 +67,18 @@ func (q *Queries) UpdateUser(ctx context.Context, arg UpdateUserParams) (User, e
 		&i.UpdatedAt,
 		&i.Email,
 		&i.HashedPassword,
+		&i.IsChirpyRed,
 	)
 	return i, err
+}
+
+const upgradeToChirpyRed = `-- name: UpgradeToChirpyRed :exec
+UPDATE users
+SET is_chirpy_red = true
+WHERE id = $1
+`
+
+func (q *Queries) UpgradeToChirpyRed(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.ExecContext(ctx, upgradeToChirpyRed, id)
+	return err
 }
